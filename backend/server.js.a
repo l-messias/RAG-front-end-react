@@ -1,0 +1,113 @@
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+const allowedOrigins = ["http://localhost:5173", "https://meu-front.com"];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS bloqueado para origem: ${origin}`));
+      }
+    },
+  })
+);
+
+app.use(express.json());
+
+app.get("/", (req, res) => {
+  res.send("Server rodando");
+});
+
+app.post("/api/stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const { query, clientId } = req.body;
+
+  if (!query) {
+    res.write('data: {"error":"Query ausente"}\n\n');
+    res.end();
+    return;
+  }
+
+  const data = {
+    redis_host: process.env.REDIS_HOST,
+    redis_port: parseInt(process.env.REDIS_PORT, 10),
+    redis_password: process.env.REDIS_PASSWORD,
+    openai_embedding_key: process.env.OPENAI_EMBEDDING_KEY,
+    openai_embedding_model: process.env.OPENAI_EMBEDDING_MODEL,
+    openai_llm_key: process.env.OPENAI_LLM_KEY,
+    openai_llm_model: process.env.OPENAI_LLM_MODEL,
+    url_llm: process.env.URL_LLM,
+    query,
+    rule: process.env.DEFAULT_PROMPT,
+    store_cache_endpoint: process.env.STORE_CACHE_ENDPOINT,
+    semantic_cache_endpoint: process.env.SEMANTIC_CACHE_ENDPOINT,
+    request_data: {
+      temperature: parseFloat(process.env.TEMPERATURE),
+      max_tokens: parseInt(process.env.MAX_TOKENS, 10),
+    },
+    top_n: parseInt(process.env.TOP_N, 10),
+    messages: [],
+  };
+
+  try {
+    const azureUrl = `${process.env.LINK_API_RAG}?code=${process.env.X_FUNCTIONS_KEY_RAG}`;
+
+    const azureRes = await fetch(azureUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!azureRes.ok) {
+      res.write(
+        `data: {"error": "Falha ao acessar Azure: ${azureRes.status}"}\n\n`
+      );
+      res.end();
+      return;
+    }
+
+    const reader = azureRes.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value);
+
+      // Filtra só o conteúdo depois de "data:"
+      const lines = chunk.split(/\r?\n/).filter((l) => l.trim() !== "");
+      for (const line of lines) {
+        const clean = line.replace(/^data:\s*/, "");
+        if (clean) {
+          res.write(`data: ${clean}\n\n`);
+        }
+      }
+    }
+
+    res.write("data: [DONE]\n\n");
+    res.end();
+  } catch (err) {
+    res.write(`data: {"error": "${err.message}"}\n\n`);
+    res.end();
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server rodando na porta ${port}`);
+});
