@@ -98,6 +98,7 @@ app.post("/chat", async (req, res) => {
       try {
         const chunkBuf = Buffer.from(value);
         let asStr;
+
         try {
           asStr = chunkBuf.toString("utf8");
           console.log(
@@ -112,40 +113,11 @@ app.post("/chat", async (req, res) => {
           );
         }
 
-        // match each SSE event block that ends with a blank line (preserve the separator)
-        // this keeps internal `data:` line breaks intact and only treats the final
-        // delimiter as the event terminator to forward to the client.
-        // Match event blocks where the double-newline separator sequence is
-        // either immediately followed by a new `data:` line or by end-of-string.
-        // We accept multiple separators in a row but forward exactly one \n\n
-        const eventBlockRegex =
-          /(data:[\s\S]*?)(?:\r?\n\r?\n)+(?=(?:data:|$))/g;
-        let matched = false;
-        let evMatch;
-        while ((evMatch = eventBlockRegex.exec(asStr)) !== null) {
-          matched = true;
-          const block = evMatch[1];
-          // forward block with a single event separator (LF-LF)
-          console.log(
-            "[backend] sending line as chunk:",
-            JSON.stringify(block + "\n\n").replace(/\n/g, "\\n")
-          );
-          res.write(block + "\n\n");
-        }
+        const parts = asStr.split(/(?=data:\s)/g).filter(Boolean);
 
-        // fallback: if regex didn't match (partial chunk without final separator),
-        // fall back to splitting on blank lines and forward each data: line (no sep)
-        if (!matched) {
-          const parts = asStr.split(/\r?\n\r?\n/);
-          for (const part of parts) {
-            if (part.startsWith("data:")) {
-              console.log(
-                "[backend] sending (partial) line as chunk:",
-                JSON.stringify(part).replace(/\n/g, "\\n")
-              );
-              res.write(part);
-            }
-          }
+        for (let part of parts) {
+          await new Promise((r) => setTimeout(r, 10));
+          res.write(part);
         }
       } catch (err) {
         console.warn("[backend] erro processando chunk:", err?.message || err);

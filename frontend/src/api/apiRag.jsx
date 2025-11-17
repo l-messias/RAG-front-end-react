@@ -24,6 +24,7 @@ export function streamRag(
   const url = buildUrl(STREAM_PATH);
   const controller = new AbortController();
   let assistantMsg = "";
+  let buffer = "";
 
   (async () => {
     try {
@@ -43,85 +44,45 @@ export function streamRag(
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      let sseBuffer = "";
-
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+
         const chunk = decoder.decode(value, { stream: true });
+        console.log("[frontend] received chunk:", chunk);
         if (!chunk) continue;
 
-        sseBuffer += chunk;
+        buffer += chunk;
+        const events = buffer.split(/(?=event:\send)/g);
+        const parts = events[0].split(/(?=data:\s)/g);
+        buffer = events.length > 1 && parts.length ? parts.pop() : "";
+        console.log("buffer after split:", buffer);
+        for (let part of parts) {
+          console.log("processing part:", part);
+          const dataPayload = part.replace(/^data:\s?/, "");
+          if (!dataPayload || dataPayload.trim() === "[DONE]") continue;
+          console.log("data payload:", dataPayload);
+          const cleanPayload = dataPayload.replace(/\n\n$/, "");
 
-        // Procura eventos completos separados por linha em branco (LF-LF ou CRLF-CRLF)
-        let sepIndex;
-        while ((sepIndex = sseBuffer.search(/\r?\n\r?\n/)) !== -1) {
-          // determine exact separator length (2 for \n\n, 4 for \r\n\r\n)
-          const maybeSep = sseBuffer.slice(sepIndex, sepIndex + 4);
-          const sepLen = maybeSep.startsWith("\r\n\r\n") ? 4 : 2;
-          const eventStr = sseBuffer.slice(0, sepIndex);
-          sseBuffer = sseBuffer.slice(sepIndex + sepLen);
-
-          console.log(
-            "Eventstr bruto:",
-            JSON.stringify(eventStr).replace(/\n/g, "\\n")
-          );
-
-          const lines = eventStr.split(/\r?\n/);
-          let eventName = null;
-          const dataParts = [];
-
-          for (const line of lines) {
-            if (!line) continue;
-            const evMatch = line.match(/^event:\s*(.*)/i);
-            if (evMatch) {
-              eventName = evMatch[1]?.trim();
-              continue;
-            }
-            const dataMatch = line.match(/^data:\s?(.*)$/i);
-            if (dataMatch) {
-              dataParts.push(dataMatch[1] ?? "");
-            }
-          }
-
-          let dataPayload = dataParts.join("\n");
-
-          if (
-            !dataPayload ||
-            dataPayload.trim() === "[DONE]" ||
-            (eventName && eventName.toLowerCase() === "end")
-          ) {
-            continue; // ignora controle
-          }
-
-          // remove apenas UM par de \n\n no final
-          dataPayload = dataPayload.replace(/(\r?\n){2}$/, "");
-
-          console.log(
-            "[apiRag] chunk limpo:",
-            JSON.stringify(dataPayload).replace(/\n/g, "\\n")
-          );
-
-          assistantMsg += dataPayload;
+          assistantMsg += cleanPayload;
           onChunk?.(assistantMsg);
         }
       }
 
-      // Flush restante do buffer
-      if (sseBuffer && sseBuffer.trim()) {
-        const dataRegex = /(?:^|\r?\n)data:\s?(.*?)(?=(?:\r?\n|$))/gs;
-        let m;
-        while ((m = dataRegex.exec(sseBuffer)) !== null) {
-          let part = m[1] ?? "";
-          if (!part || part.trim() === "[DONE]") continue;
+      if (buffer.trim()) {
+        const events = buffer.split(/(?=event:\send)/g);
+        const parts = events[0].split(/(?=data:\s)/g);
+        for (let part of parts) {
+          // if (/event:\s*end/i.test(part)) continue;
+          console.log("processing part buffer:", part);
 
-          part = part.replace(/(\r?\n){2}$/, "");
-          console.log(
-            "[apiRag] chunk limpo (flush):",
-            JSON.stringify(part).replace(/\n/g, "\\n")
-          );
+          const dataPayload = part.replace(/^data:\s?/, "");
+          console.log("data payload buffer:", dataPayload);
 
-          assistantMsg += part;
+          if (!dataPayload || dataPayload.trim() === "[DONE]") continue;
+          console.log("final data payload:", dataPayload);
+          const cleanPayload = dataPayload.replace(/\n\n$/, "");
+          assistantMsg += cleanPayload;
         }
       }
 
